@@ -83,7 +83,7 @@ async function loadOrCreateConfig() {
 }
 // ==============================
 
-const COMMANDS_MSG = "可用指令：\n/time - 查询当前连接剩余时间";
+const COMMANDS_MSG = "连接成功！\n可用指令：\n/time - 查询当前连接剩余时间\n\n非指令输入即为接口/AI对话";
 
 // 共享状态（模块级）
 let botToken;
