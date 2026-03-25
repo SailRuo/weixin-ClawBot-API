@@ -4,6 +4,30 @@ const BASE_URL = "https://ilinkai.weixin.qq.com";
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
+// ========== 自动重连配置（可调参数） ==========
+// 测试时将数值改小，例如：
+//   session_duration: 300, warning_before: 60, reminder_interval: 30,
+//   force_before: 60, qrcode_scan_timeout: 120
+const RECONNECT_CONFIG = {
+  session_duration:    24 * 3600,  // 会话总时长（秒）
+  warning_before:       2 * 3600,  // 提前多久发出警告（秒）
+  reminder_interval:      30 * 60, // 用户回 N 后多久再问（秒）
+  force_before:           30 * 60, // 最后多久强制重连（秒）
+  qrcode_scan_timeout:       600,  // 等待用户扫码最长时间（秒）
+};
+// =============================================
+
+// 共享状态（模块级）
+let botToken;
+let botBaseUrl = BASE_URL;
+let getUpdatesBuf = "";
+const typingTicketCache = {};
+let lastContact = { fromId: null, contextToken: null };
+let warningActive = false;
+let reconnectInProgress = false;
+let reconnectResolve = null;  // Y 回复时调用：reconnectResolve?.()
+let loginTime;
+
 function makeHeaders(token) {
   const uin = BigInt(Math.floor(Math.random() * 0xFFFFFFFF)).toString();
   return {
@@ -14,14 +38,246 @@ function makeHeaders(token) {
   };
 }
 
-async function apiPost(path, body, token) {
-  const res = await fetch(`${BASE_URL}/${path}`, {
+async function apiPost(path, body, token, baseUrl) {
+  const url = `${baseUrl ?? botBaseUrl}/${path}`;
+  const res = await fetch(url, {
     method: "POST",
-    headers: makeHeaders(token),
+    headers: makeHeaders(token ?? botToken),
     body: JSON.stringify(body)
   });
   return res.json();
 }
+
+async function sendMsgSafe(toId, contextToken, text) {
+  if (!toId || !contextToken) {
+    console.log(`[重连通知] ${text}`);
+    return;
+  }
+  try {
+    const clientId = `openclaw-weixin-${Math.floor(Math.random() * 0xFFFFFFFF).toString(16).padStart(8, "0")}`;
+    await apiPost("ilink/bot/sendmessage", {
+      msg: {
+        from_user_id: "",
+        to_user_id: toId,
+        client_id: clientId,
+        message_type: 2,
+        message_state: 2,
+        context_token: contextToken,
+        item_list: [{ type: 1, text_item: { text } }]
+      },
+      base_info: { channel_version: "1.0.2" }
+    });
+  } catch (e) {
+    console.log(`[重连通知] 发送失败(${e?.message})，降级打印: ${text}`);
+  }
+}
+
+async function doReconnect() {
+  if (reconnectInProgress) return;
+  reconnectInProgress = true;
+  warningActive = false;
+  reconnectResolve = null;
+
+  console.log("[重连] 开始重连流程...");
+  const { fromId, contextToken } = lastContact;
+
+  // 获取新二维码（必须带 bot_type=3，使用动态 botBaseUrl）
+  let qrcode, qrcodeUrl;
+  try {
+    const data = await fetch(`${botBaseUrl}/ilink/bot/get_bot_qrcode?bot_type=3`).then(r => r.json());
+    qrcode = data.qrcode;
+    qrcodeUrl = data.qrcode_img_content ?? qrcode;
+  } catch (e) {
+    console.log(`[重连] 获取二维码失败: ${e?.message}`);
+    reconnectInProgress = false;
+    loginTime = Date.now();
+    return;
+  }
+
+  const qrMsg = `[重连] 请扫码完成新连接：${qrcodeUrl}`;
+  console.log(qrMsg);
+  await sendMsgSafe(fromId, contextToken, qrMsg);
+
+  // 轮询扫码状态（带超时）
+  const deadline = Date.now() + RECONNECT_CONFIG.qrcode_scan_timeout * 1000;
+  let newToken = null, newBaseUrl = null;
+  while (Date.now() < deadline) {
+    try {
+      const status = await fetch(
+        `${botBaseUrl}/ilink/bot/get_qrcode_status?qrcode=${qrcode}`
+      ).then(r => r.json());
+      if (status.status === "confirmed") {
+        newToken = status.bot_token;
+        newBaseUrl = status.baseurl ?? botBaseUrl;
+        break;
+      }
+    } catch {}
+    await sleep(1000);
+  }
+
+  if (!newToken) {
+    console.log("[重连] 扫码超时，重连未完成");
+    await sendMsgSafe(fromId, contextToken, "[失败] 扫码超时，重连未完成，下次到期前会再次提醒");
+    loginTime = Date.now();
+    reconnectInProgress = false;
+    return;
+  }
+
+  // 原子替换 token
+  botToken = newToken;
+  botBaseUrl = newBaseUrl;
+  Object.keys(typingTicketCache).forEach(k => delete typingTicketCache[k]);
+  console.log("[重连] 新连接已建立，token 已切换");
+  await sendMsgSafe(fromId, contextToken, "[完成] 新连接已建立，已自动切换，继续使用");
+
+  reconnectInProgress = false;
+  loginTime = Date.now();
+}
+
+async function reconnectTimerLoop() {
+  while (true) {
+    // 等待到发警告的时间点
+    const elapsed = (Date.now() - loginTime) / 1000;
+    const firstWait = Math.max(0, RECONNECT_CONFIG.session_duration - RECONNECT_CONFIG.warning_before - elapsed);
+    await sleep(firstWait * 1000);
+
+    // 检查剩余时间
+    let remaining = (loginTime + RECONNECT_CONFIG.session_duration * 1000 - Date.now()) / 1000;
+    if (remaining <= RECONNECT_CONFIG.force_before) {
+      const msg = "[自动] 连接即将到期，开始强制重新连接...";
+      console.log(msg);
+      await sendMsgSafe(lastContact.fromId, lastContact.contextToken, msg);
+      await doReconnect();
+      continue;
+    }
+
+    // 发初次警告
+    const remainingH = (remaining / 3600).toFixed(1);
+    const warnMsg = `[提醒] 连接还剩约 ${remainingH} 小时到期，是否现在重新连接？回复 Y 立即重连，N 稍后提醒`;
+    console.log(warnMsg);
+    await sendMsgSafe(lastContact.fromId, lastContact.contextToken, warnMsg);
+    warningActive = true;
+
+    // 询问循环
+    while (true) {
+      remaining = (loginTime + RECONNECT_CONFIG.session_duration * 1000 - Date.now()) / 1000;
+      if (remaining <= RECONNECT_CONFIG.force_before) {
+        const forceMsg = "[自动] 连接即将到期，开始强制重新连接...";
+        console.log(forceMsg);
+        await sendMsgSafe(lastContact.fromId, lastContact.contextToken, forceMsg);
+        await doReconnect();
+        break;
+      }
+
+      const waitSecs = Math.max(0, Math.min(RECONNECT_CONFIG.reminder_interval,
+                                             remaining - RECONNECT_CONFIG.force_before));
+
+      // 等待用户 Y 或超时，取先完成者
+      let userReplied = false;
+      await Promise.race([
+        new Promise(r => { reconnectResolve = () => { userReplied = true; r(); }; }),
+        sleep(waitSecs * 1000)
+      ]);
+
+      if (userReplied) {
+        await doReconnect();
+        break;
+      }
+
+      // 超时：重新评估剩余时间
+      remaining = (loginTime + RECONNECT_CONFIG.session_duration * 1000 - Date.now()) / 1000;
+      if (remaining <= RECONNECT_CONFIG.force_before) continue;
+
+      const remainingM = Math.round(remaining / 60);
+      const remindMsg = `[提醒] 连接还剩约 ${remainingM} 分钟，是否现在重新连接？回复 Y 立即重连，N 继续等待`;
+      console.log(remindMsg);
+      await sendMsgSafe(lastContact.fromId, lastContact.contextToken, remindMsg);
+    }
+  }
+}
+
+async function messageLoop() {
+  console.log("开始监听消息...");
+  while (true) {
+    const result = await apiPost(
+      "ilink/bot/getupdates",
+      { get_updates_buf: getUpdatesBuf, base_info: { channel_version: "1.0.2" } }
+    );
+    getUpdatesBuf = result.get_updates_buf ?? getUpdatesBuf;
+
+    for (const msg of result.msgs ?? []) {
+      if (msg.message_type !== 1) continue;
+      const text = msg.item_list?.[0]?.text_item?.text;
+      const fromId = msg.from_user_id;
+      const contextToken = msg.context_token;
+      console.log(`收到消息: ${text}`);
+
+      // 更新最近联系人
+      lastContact = { fromId, contextToken };
+
+      // Y/N 重连询问处理（优先于普通回复）
+      if (warningActive && ["Y", "N"].includes(text?.trim()?.toUpperCase())) {
+        if (text.trim().toUpperCase() === "Y") {
+          reconnectResolve?.();
+          await sendMsgSafe(fromId, contextToken, "好的，正在重新连接...");
+        } else {
+          await sendMsgSafe(fromId, contextToken, "好的，稍后再提醒您");
+        }
+        continue;
+      }
+
+      // getconfig 获取 typing_ticket（每个用户首次调用，缓存复用）
+      if (!typingTicketCache[fromId]) {
+        const cfg = await apiPost("ilink/bot/getconfig", {
+          ilink_user_id: fromId,
+          context_token: contextToken,
+          base_info: { channel_version: "1.0.2" }
+        });
+        typingTicketCache[fromId] = cfg.typing_ticket ?? "";
+      }
+      const typingTicket = typingTicketCache[fromId];
+
+      // sendtyping status=1：显示"正在输入"
+      if (typingTicket) {
+        await apiPost("ilink/bot/sendtyping", {
+          ilink_user_id: fromId,
+          typing_ticket: typingTicket,
+          status: 1
+        });
+      }
+
+      // 回复内容（替换为你的 AI 调用）
+      const reply = "你好";
+
+      // sendmessage：补全 SDK 所需字段
+      const clientId = `openclaw-weixin-${Math.floor(Math.random() * 0xFFFFFFFF).toString(16).padStart(8, "0")}`;
+      await apiPost("ilink/bot/sendmessage", {
+        msg: {
+          from_user_id: "",
+          to_user_id: fromId,
+          client_id: clientId,
+          message_type: 2,
+          message_state: 2,
+          context_token: contextToken,
+          item_list: [{ type: 1, text_item: { text: reply } }]
+        },
+        base_info: { channel_version: "1.0.2" }
+      });
+      console.log(`已回复: ${reply}`);
+
+      // sendtyping status=2：取消"正在输入"
+      if (typingTicket) {
+        await apiPost("ilink/bot/sendtyping", {
+          ilink_user_id: fromId,
+          typing_ticket: typingTicket,
+          status: 2
+        });
+      }
+    }
+  }
+}
+
+// ── 启动流程 ──
 
 // 1. 获取二维码
 const { qrcode, qrcode_img_content } = await fetch(
@@ -48,7 +304,6 @@ if (qrcode_img_content) {
 }
 
 // 2. 等待扫码
-let botToken;
 console.log("等待扫码...");
 while (true) {
   const status = await fetch(
@@ -57,77 +312,13 @@ while (true) {
 
   if (status.status === "confirmed") {
     botToken = status.bot_token;
+    botBaseUrl = status.baseurl ?? BASE_URL;
     console.log("登录成功！");
     break;
   }
   await sleep(1000);
 }
 
-// 3. 长轮询收消息
-let getUpdatesBuf = "";
-const typingTicketCache = {};  // 按用户缓存 typing_ticket
-console.log("开始监听消息...");
-while (true) {
-  const { msgs, get_updates_buf } = await apiPost(
-    "ilink/bot/getupdates",
-    { get_updates_buf: getUpdatesBuf, base_info: { channel_version: "1.0.2" } },
-    botToken
-  );
-  getUpdatesBuf = get_updates_buf ?? getUpdatesBuf;
-
-  for (const msg of msgs ?? []) {
-    if (msg.message_type !== 1) continue;
-    const text = msg.item_list?.[0]?.text_item?.text;
-    const fromId = msg.from_user_id;
-    const contextToken = msg.context_token;
-    console.log(`收到消息: ${text}`);
-
-    // getconfig 获取 typing_ticket（每个用户首次调用，缓存复用）
-    if (!typingTicketCache[fromId]) {
-      const cfg = await apiPost("ilink/bot/getconfig", {
-        ilink_user_id: fromId,
-        context_token: contextToken,
-        base_info: { channel_version: "1.0.2" }
-      }, botToken);
-      typingTicketCache[fromId] = cfg.typing_ticket ?? "";
-    }
-    const typingTicket = typingTicketCache[fromId];
-
-    // sendtyping status=1：显示"正在输入"
-    if (typingTicket) {
-      await apiPost("ilink/bot/sendtyping", {
-        ilink_user_id: fromId,
-        typing_ticket: typingTicket,
-        status: 1
-      }, botToken);
-    }
-
-    // 回复内容（替换为你的 AI 调用）
-    const reply = "你好";
-
-    // sendmessage：补全 SDK 所需字段
-    const clientId = `openclaw-weixin-${Math.floor(Math.random() * 0xFFFFFFFF).toString(16).padStart(8, "0")}`;
-    await apiPost("ilink/bot/sendmessage", {
-      msg: {
-        from_user_id: "",
-        to_user_id: fromId,
-        client_id: clientId,
-        message_type: 2,
-        message_state: 2,
-        context_token: contextToken,
-        item_list: [{ type: 1, text_item: { text: reply } }]
-      },
-      base_info: { channel_version: "1.0.2" }
-    }, botToken);
-    console.log(`已回复: ${reply}`);
-
-    // sendtyping status=2：取消"正在输入"
-    if (typingTicket) {
-      await apiPost("ilink/bot/sendtyping", {
-        ilink_user_id: fromId,
-        typing_ticket: typingTicket,
-        status: 2
-      }, botToken);
-    }
-  }
-}
+// 3. 记录登录时间，并发启动消息循环和定时器循环
+loginTime = Date.now();
+await Promise.all([messageLoop(), reconnectTimerLoop()]);
