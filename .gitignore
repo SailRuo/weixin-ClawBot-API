@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.cache
+nosetests.xml
+coverage.xml
+*.renpyc
+src/
+venv/
+.venv/
+env/
+lib/
+lib64/
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+
+# ⚠️ 敏感信息 (Sensitive Information)
+config.json
+*.session
+
+# 临时生成的二维码 (Temporary Files)
+qrcode.png
+qrcode.png.png
+qrcode.svg
+qrcode.jpg
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

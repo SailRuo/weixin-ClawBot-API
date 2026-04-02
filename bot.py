@@ -7,7 +7,8 @@ import re
 import aiohttp
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dusapi import DusAPI, DusConfig
+# from dusapi import DusAPI, DusConfig
+from openai_api import OpenAIAPI as DusAPI, OpenAIConfig as DusConfig
 
 executor = ThreadPoolExecutor(max_workers=4)
 ai = None  # 启动时从配置文件加载后初始化
@@ -99,6 +100,14 @@ def load_or_create_config() -> dict:
                 os.remove(CONFIG_FILE)
                 continue  # 回到循环顶部重新创建
             return cfg
+
+
+def save_config(cfg: dict):
+    """持久化配置到文件。"""
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+
 # ==============================
 
 BASE_URL = "https://ilinkai.weixin.qq.com"
@@ -230,6 +239,10 @@ async def do_reconnect(session, bot_token_ref, bot_base_url_ref, last_contact,
     # 成功：原子替换 token 和 base_url
     bot_token_ref[0] = new_token
     bot_base_url_ref[0] = new_base_url
+    _raw_cfg["bot_token"] = new_token
+    _raw_cfg["bot_base_url"] = new_base_url
+    save_config(_raw_cfg)
+    
     typing_ticket_cache.clear()
     print("[重连] 新连接已建立，token 已切换")
     await send_msg_safe(session, from_id, ctx,
@@ -308,56 +321,84 @@ async def reconnect_timer_task(session, bot_token_ref, bot_base_url_ref, last_co
 
 async def main():
     async with aiohttp.ClientSession() as session:
-        # 1. 获取二维码
-        async with session.get(
-            f"{BASE_URL}/ilink/bot/get_bot_qrcode?bot_type=3"
-        ) as res:
-            data = await res.json(content_type=None)
-
-        qrcode = data["qrcode"]
-        qrcode_img_content = data.get("qrcode_img_content", "")
-
-        print("qrcode:", qrcode)
-        print("qrcode_img_content 前100字符:", str(qrcode_img_content)[:100])
-
-        if qrcode_img_content:
-            content = str(qrcode_img_content)
-            if content.startswith("data:image/"):
-                header, b64 = content.split(",", 1)
-                m = re.search(r"data:image/(\w+)", header)
-                ext = m.group(1) if m else "png"
-                with open(f"qrcode.{ext}", "wb") as f:
-                    f.write(base64.b64decode(b64))
-                print(f"二维码已保存到 qrcode.{ext}")
-            elif content.startswith("http"):
-                print("二维码图片地址:", content)
-                print("请将图片地址复制后在微信里发给文件传输助手，然后在手机端微信打开链接即可连接！！")
-            elif content.startswith("<svg"):
-                with open("qrcode.svg", "w", encoding="utf-8") as f:
-                    f.write(content)
-                print("二维码已保存到 qrcode.svg，用浏览器打开")
+        # 0. 尝试恢复存量会话
+        bot_token = _raw_cfg.get("bot_token")
+        bot_base_url = _raw_cfg.get("bot_base_url", "")
+        
+        session_recovered = False
+        if bot_token:
+            print(f"\n[会话] 检测到配置中的 Token: {mask_key(bot_token)}")
+            print("[会话] 正在尝试恢复连接...")
+            # 静默测试 token 是否可用 (调用 getconfig)
+            test_res = await api_post(
+                session,
+                "ilink/bot/getconfig",
+                {"ilink_user_id": "test", "context_token": "test", "base_info": {"channel_version": "1.0.2"}},
+                bot_token,
+                bot_base_url or None,
+            )
+            # 如果没有明确的认证失败错误（401/403 或特定的 errcode），则尝试复用
+            if test_res.get("errcode") not in (40001, 1001, 1002): # 假设这些是常见的失效码
+                print("[成功] 存量会话依然有效，跳过扫码流程")
+                session_recovered = True
             else:
-                with open("qrcode.png", "wb") as f:
-                    f.write(base64.b64decode(content))
-                print("二维码已保存到 qrcode.png")
+                print("[过期] 存量会话已过期，准备重新获取二维码")
 
-        # 2. 等待扫码
-        print("等待扫码...")
-        bot_token = None
-        bot_base_url = ""
-        while True:
+        if not session_recovered:
+            # 1. 获取二维码
             async with session.get(
-                f"{BASE_URL}/ilink/bot/get_qrcode_status?qrcode={qrcode}"
+                f"{BASE_URL}/ilink/bot/get_bot_qrcode?bot_type=3"
             ) as res:
-                status = await res.json(content_type=None)
+                data = await res.json(content_type=None)
 
-            if status.get("status") == "confirmed":
-                bot_token = status["bot_token"]
-                bot_base_url = status.get("baseurl", "")
-                print(f"登录成功！baseurl={bot_base_url}")
-                print(f"{'='*40}\n{COMMANDS_MSG}\n{'='*40}")
-                break
-            await asyncio.sleep(1)
+            qrcode = data["qrcode"]
+            qrcode_img_content = data.get("qrcode_img_content", "")
+
+            print("qrcode:", qrcode)
+            print("qrcode_img_content 前100字符:", str(qrcode_img_content)[:100])
+
+            if qrcode_img_content:
+                content = str(qrcode_img_content)
+                if content.startswith("data:image/"):
+                    header, b64 = content.split(",", 1)
+                    m = re.search(r"data:image/(\w+)", header)
+                    ext = m.group(1) if m else "png"
+                    with open(f"qrcode.{ext}", "wb") as f:
+                        f.write(base64.b64decode(b64))
+                    print(f"二维码已保存到 qrcode.{ext}")
+                elif content.startswith("http"):
+                    print("二维码图片地址:", content)
+                    print("请将图片地址复制后在微信里发给文件传输助手，然后在手机端微信打开链接即可连接！！")
+                elif content.startswith("<svg"):
+                    with open("qrcode.svg", "w", encoding="utf-8") as f:
+                        f.write(content)
+                    print("二维码已保存到 qrcode.svg，用浏览器打开")
+                else:
+                    with open("qrcode.png", "wb") as f:
+                        f.write(base64.b64decode(content))
+                    print("二维码已保存到 qrcode.png")
+
+            # 2. 等待扫码
+            print("等待扫码...")
+            bot_token = None
+            bot_base_url = ""
+            while True:
+                async with session.get(
+                    f"{BASE_URL}/ilink/bot/get_qrcode_status?qrcode={qrcode}"
+                ) as res:
+                    status = await res.json(content_type=None)
+
+                if status.get("status") == "confirmed":
+                    bot_token = status["bot_token"]
+                    bot_base_url = status.get("baseurl", "")
+                    print(f"登录成功！baseurl={bot_base_url}")
+                    # 保存到配置
+                    _raw_cfg["bot_token"] = bot_token
+                    _raw_cfg["bot_base_url"] = bot_base_url
+                    save_config(_raw_cfg)
+                    print(f"{'='*40}\n{COMMANDS_MSG}\n{'='*40}")
+                    break
+                await asyncio.sleep(1)
 
         # 3. 共享状态（可变引用，传给定时器任务和消息循环）
         bot_token_ref = [bot_token]
