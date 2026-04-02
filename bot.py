@@ -251,6 +251,83 @@ async def download_and_save_voice(session, voice_item):
         return None
 
 
+async def download_and_save_file(session, file_item):
+    """从 CDN 下载并解密文件，保存到 data 目录。"""
+    media = file_item.get("media", {})
+    url = media.get("full_url")
+    if not url:
+        return None
+
+    b64_key = media.get("aes_key")
+    if not b64_key:
+        return None
+    
+    try:
+        key = parse_aes_key(b64_key)
+        async with session.get(url) as res:
+            if res.status != 200:
+                print(f"  [文件下载] HTTP {res.status} 失败")
+                return None
+            encrypted_data = await res.read()
+        
+        decrypted_data = decrypt_aes_ecb(encrypted_data, key)
+        
+        # 尝试提取原始文件名
+        raw_name = file_item.get("file_name")
+        if not raw_name:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            raw_name = f"file_{timestamp}_{uuid.uuid4().hex[:8]}.bin"
+        
+        filepath = os.path.join(DATA_DIR, raw_name)
+        # 如果文件已存在，添加唯一标识
+        if os.path.exists(filepath):
+            name, ext = os.path.splitext(raw_name)
+            filepath = os.path.join(DATA_DIR, f"{name}_{uuid.uuid4().hex[:4]}{ext}")
+
+        with open(filepath, "wb") as f:
+            f.write(decrypted_data)
+        
+        return filepath
+    except Exception as e:
+        print(f"  [文件处理] 失败: {e}")
+        return None
+
+
+async def download_and_save_video(session, video_item):
+    """从 CDN 下载并解密视频，保存到 data 目录。"""
+    media = video_item.get("media", {})
+    url = media.get("full_url")
+    if not url:
+        return None
+
+    b64_key = media.get("aes_key")
+    if not b64_key:
+        return None
+    
+    try:
+        key = parse_aes_key(b64_key)
+        async with session.get(url) as res:
+            if res.status != 200:
+                print(f"  [视频下载] HTTP {res.status} 失败")
+                return None
+            encrypted_data = await res.read()
+        
+        decrypted_data = decrypt_aes_ecb(encrypted_data, key)
+        
+        # 保存为 mp4
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"video_{timestamp}_{uuid.uuid4().hex[:8]}.mp4"
+        filepath = os.path.join(DATA_DIR, filename)
+        
+        with open(filepath, "wb") as f:
+            f.write(decrypted_data)
+        
+        return filepath
+    except Exception as e:
+        print(f"  [视频处理] 失败: {e}")
+        return None
+
+
 async def send_msg_safe(session, to_id, context_token, text, bot_token_ref, bot_base_url_ref):
     """发送微信消息，失败时降级为控制台打印，不抛异常。"""
     if not to_id or not context_token:
@@ -546,9 +623,17 @@ async def main():
                 
                 from_id = msg["from_user_id"]
                 context_token = msg["context_token"]
+                bot_user_id = msg.get("to_user_id") # 机器人自己的 ID
                 
                 # 遍历 item_list 处理不同类型的消息项
                 text = ""
+                
+                # 持久化双方 ID 供演示脚本使用
+                _raw_cfg["last_user_id"] = from_id
+                _raw_cfg["last_context_token"] = context_token
+                if bot_user_id:
+                    _raw_cfg["bot_user_id"] = bot_user_id
+                save_config(_raw_cfg)
                 for item in msg.get("item_list", []):
                     # 类型 1: 文本
                     if item.get("type") == 1:
@@ -578,10 +663,28 @@ async def main():
                             if voice_text:
                                 print(f"  [消息] 语音识别结果: {voice_text}")
                                 text += voice_text
+                    
+                    # 类型 4: 文件
+                    elif item.get("type") == 4:
+                        file_item = item.get("file_item", {})
+                        if file_item:
+                            print(f"  [消息] 收到来自 {from_id} 的文件: {file_item.get('file_name', '未知')}")
+                            path = await download_and_save_file(session, file_item)
+                            if path:
+                                print(f"  [消息] 文件已保存至: {path}")
+
+                    # 类型 5: 视频
+                    elif item.get("type") == 5:
+                        video_item = item.get("video_item", {})
+                        if video_item:
+                            print(f"  [消息] 收到来自 {from_id} 的视频...")
+                            path = await download_and_save_video(session, video_item)
+                            if path:
+                                print(f"  [消息] 视频已保存至: {path}")
                 
                 if not text:
                     # 如果只有媒体文件没有文字，且也没识别出语音文字，则忽略对话
-                    has_media = any(item.get("type") in (2, 3) for item in msg.get("item_list", []))
+                    has_media = any(item.get("type") in (2, 3, 4, 5) for item in msg.get("item_list", []))
                     if has_media:
                         continue
                     continue
@@ -591,6 +694,11 @@ async def main():
                 # 更新最近联系人（定时器任务用于发通知）
                 last_contact["from_id"] = from_id
                 last_contact["context_token"] = context_token
+                
+                # 持久化最后一位联系人，供演示脚本使用
+                _raw_cfg["last_user_id"] = from_id
+                _raw_cfg["last_context_token"] = context_token
+                save_config(_raw_cfg)
 
                 # 优先级 1：手动重连 Y/N 确认（/重新连接 发出后等待回复）
                 if manual_reconnect_pending.get(from_id) and text.strip().upper() in ("Y", "N"):

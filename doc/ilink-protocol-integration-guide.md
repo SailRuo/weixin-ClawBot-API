@@ -74,9 +74,31 @@
 3. **获取凭证**：成功后的 CDN 响应头会包含 `x-encrypted-param`。
 
 ### 5.3 多媒体类型 (MessageItem) 结构模版
-- **图片 (Type 2)**: 包含 `image_item` 字段，需提供原图与缩略图（可选）的 `media` 引用。
-- **视频 (Type 5)**: 包含 `video_item`，必填 `play_length` (毫秒) 和 `thumb_media` (封面)。
-- **语音 (Type 3)**: 包含 `voice_item`，强制使用 `encode_type: 6` (SILK)。
+
+在 `item_list` 中，不同类型的媒体资源需要填充对应的结构体。
+
+#### 1. 图片 (Type 2)
+*   **下行接收**：包含 `image_item`。解密密钥优先从 `aeskey` (Hex) 获取，其次由 `media.aes_key` (Base64) 获取。
+*   **上行发送**：需提供 `media` 引用。建议同时提供 `thumb_media`（缩略图）以提升端侧加载体验。
+
+#### 2. 语音 (Type 3)
+*   **下行接收**：包含 `voice_item`。自动转换结果在 `text` 字段中。
+*   **上行发送 (必填项)**：
+    *   `media`: 指向上传好的 SILK 文件。
+    *   `encode_type`: 必须设为 `6` (代表 SILK 编码)。
+
+#### 3. 文件 (Type 4)
+*   **下行接收**：包含 `file_item`。文件名位于 `file_name`。
+*   **上行发送 (必填项)**：
+    *   `media`: 文件流引用。
+    *   `file_name`: 必须提供文件名（含后缀），否则用户端无法正确打开。
+
+#### 4. 视频 (Type 5)
+*   **下行接收**：包含 `video_item`。封面由 `thumb_media` 提供。
+*   **上行发送 (必填项)**：
+    *   `media`: 视频流引用。
+    *   `thumb_media`: **强制要求** 提供封面图，否则视频消息在手机端无法正常预览。
+    *   `play_length`: **强制要求** 提供视频总时长（单位：毫秒）。
 
 ---
 
