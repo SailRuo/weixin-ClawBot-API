@@ -6,12 +6,19 @@ import random
 import re
 import aiohttp
 import time
+import uuid
+from datetime import datetime
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives import padding
 from concurrent.futures import ThreadPoolExecutor
 # from dusapi import DusAPI, DusConfig
 from openai_api import OpenAIAPI as DusAPI, OpenAIConfig as DusConfig
 
 executor = ThreadPoolExecutor(max_workers=4)
 ai = None  # 启动时从配置文件加载后初始化
+DATA_DIR = "data"
+if not os.path.exists(DATA_DIR):
+    os.makedirs(DATA_DIR)
 
 # ========== 自动重连配置（可调参数） ==========
 # 测试时将数值改小，例如：
@@ -143,6 +150,105 @@ async def api_post(session, path, body, token=None, base_url=None):
             return json.loads(text)
         except Exception:
             return {}
+
+
+def parse_aes_key(aes_key_base64: str) -> bytes:
+    """解析 AES 密钥，支持 Base64 编码的 16 字节原始数据或 32 字符 Hex 字符串。"""
+    decoded = base64.b64decode(aes_key_base64)
+    if len(decoded) == 16:
+        return decoded
+    if len(decoded) == 32:
+        try:
+            return bytes.fromhex(decoded.decode('ascii'))
+        except Exception:
+            pass
+    raise ValueError(f"Invalid AES key length: {len(decoded)}")
+
+
+def decrypt_aes_ecb(ciphertext: bytes, key: bytes) -> bytes:
+    """使用 AES-128-ECB 解密并去除 PKCS7 填充。"""
+    cipher = Cipher(algorithms.AES(key), modes.ECB())
+    decryptor = cipher.decryptor()
+    padded_data = decryptor.update(ciphertext) + decryptor.finalize()
+    unpadder = padding.PKCS7(128).unpadder()
+    return unpadder.update(padded_data) + unpadder.finalize()
+
+
+async def download_and_save_image(session, img_item):
+    """从 CDN 下载并解密图片，保存到 data 目录。"""
+    media = img_item.get("media", {})
+    url = media.get("full_url")
+    if not url:
+        return None
+
+    # 优先使用 hex 格式的 aeskey
+    hex_key = img_item.get("aeskey")
+    if hex_key:
+        key = bytes.fromhex(hex_key)
+    else:
+        # 否则使用 media 中的 base64 aes_key
+        b64_key = media.get("aes_key")
+        if not b64_key:
+            return None
+        key = parse_aes_key(b64_key)
+
+    try:
+        async with session.get(url) as res:
+            if res.status != 200:
+                print(f"  [图片下载] HTTP {res.status} 失败")
+                return None
+            encrypted_data = await res.read()
+        
+        decrypted_data = decrypt_aes_ecb(encrypted_data, key)
+        
+        # 生成唯一文件名
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"image_{timestamp}_{uuid.uuid4().hex[:8]}.png"
+        filepath = os.path.join(DATA_DIR, filename)
+        
+        with open(filepath, "wb") as f:
+            f.write(decrypted_data)
+        
+        return filepath
+    except Exception as e:
+        print(f"  [图片处理] 失败: {e}")
+        return None
+
+
+async def download_and_save_voice(session, voice_item):
+    """从 CDN 下载并解密语音，保存到 data 目录。"""
+    media = voice_item.get("media", {})
+    url = media.get("full_url")
+    if not url:
+        return None
+
+    # 对于语音，通常优先解密 aes_key 字段
+    b64_key = media.get("aes_key")
+    if not b64_key:
+        return None
+    
+    try:
+        key = parse_aes_key(b64_key)
+        async with session.get(url) as res:
+            if res.status != 200:
+                print(f"  [语音下载] HTTP {res.status} 失败")
+                return None
+            encrypted_data = await res.read()
+        
+        decrypted_data = decrypt_aes_ecb(encrypted_data, key)
+        
+        # 生成唯一文件名 (WeChat 语音默认为 silk 格式)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"voice_{timestamp}_{uuid.uuid4().hex[:8]}.silk"
+        filepath = os.path.join(DATA_DIR, filename)
+        
+        with open(filepath, "wb") as f:
+            f.write(decrypted_data)
+        
+        return filepath
+    except Exception as e:
+        print(f"  [语音处理] 失败: {e}")
+        return None
 
 
 async def send_msg_safe(session, to_id, context_token, text, bot_token_ref, bot_base_url_ref):
@@ -405,6 +511,8 @@ async def main():
         bot_base_url_ref = [bot_base_url]
         last_contact = {"from_id": None, "context_token": None}
         typing_ticket_cache = {}
+        user_histories = {} # {from_id: [{"attr": "user"/"self", "content": "..."}]}
+        MAX_HISTORY = 10    # 每个用户最近 10 条记录
         welcomed_users = set()
         reconnect_asked = asyncio.Event()
         warning_active = [False]
@@ -435,9 +543,49 @@ async def main():
             for msg in result.get("msgs") or []:
                 if msg.get("message_type") != 1:
                     continue
-                text = msg.get("item_list", [{}])[0].get("text_item", {}).get("text", "")
+                
                 from_id = msg["from_user_id"]
                 context_token = msg["context_token"]
+                
+                # 遍历 item_list 处理不同类型的消息项
+                text = ""
+                for item in msg.get("item_list", []):
+                    # 类型 1: 文本
+                    if item.get("type") == 1:
+                        text += item.get("text_item", {}).get("text", "")
+                    
+                    # 类型 2: 图片
+                    elif item.get("type") == 2:
+                        img_item = item.get("image_item", {})
+                        if img_item:
+                            print(f"  [消息] 收到来自 {from_id} 的图片...")
+                            path = await download_and_save_image(session, img_item)
+                            if path:
+                                print(f"  [消息] 图片已保存至: {path}")
+                    
+                    # 类型 3: 语音
+                    elif item.get("type") == 3:
+                        voice_item = item.get("voice_item", {})
+                        if voice_item:
+                            print(f"  [消息] 收到来自 {from_id} 的语音...")
+                            # 1. 保存语音文件
+                            path = await download_and_save_voice(session, voice_item)
+                            if path:
+                                print(f"  [消息] 语音已保存至: {path}")
+                            
+                            # 2. 提取语音转文字内容（STT）
+                            voice_text = voice_item.get("text", "")
+                            if voice_text:
+                                print(f"  [消息] 语音识别结果: {voice_text}")
+                                text += voice_text
+                
+                if not text:
+                    # 如果只有媒体文件没有文字，且也没识别出语音文字，则忽略对话
+                    has_media = any(item.get("type") in (2, 3) for item in msg.get("item_list", []))
+                    if has_media:
+                        continue
+                    continue
+
                 print(f"收到消息: {text}")
 
                 # 更新最近联系人（定时器任务用于发通知）
@@ -532,10 +680,22 @@ async def main():
                         bot_base_url_ref[0] or None,
                     )
 
-                # 调用 AI
+                # 获取该用户的历史对话并调用 AI
+                history = user_histories.get(from_id, [])
                 loop = asyncio.get_event_loop()
                 # 或者替换为你自已要用的接口
-                reply = await loop.run_in_executor(executor, ai.chat, text)
+                reply = await loop.run_in_executor(executor, ai.chat, text, None, None, history)
+
+                # 记录用户本次消息和回复到历史
+                if from_id not in user_histories:
+                    user_histories[from_id] = []
+                # 注意：history 是引用，直接修改 user_histories[from_id] 也可以
+                user_histories[from_id].append({"attr": "user", "content": text})
+                user_histories[from_id].append({"attr": "self", "content": reply})
+                
+                # 限制历史条数
+                if len(user_histories[from_id]) > MAX_HISTORY:
+                    user_histories[from_id] = user_histories[from_id][-MAX_HISTORY:]
 
                 # sendmessage（补全 SDK 所需字段）
                 client_id = f"openclaw-weixin-{random.randint(0, 0xFFFFFFFF):08x}"

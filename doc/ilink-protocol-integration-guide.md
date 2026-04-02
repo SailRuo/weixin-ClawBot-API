@@ -30,29 +30,6 @@
 | `iLink-App-ClientVersion` | `131331` | 对应版本 2.1.3 (计算见下文) |
 | `X-WECHAT-UIN` | `MTE4Njk5MzE0Mg==` | **动态随机值** (计算见下文) |
 
-### 2.2 关键算法实现 (Python 示例)
-
-#### 客户端版本号计算
-协议要求将 `X.Y.Z` 版本号转换为 `uint32`：`(X << 16) | (Y << 8) | Z`。
-```python
-def get_client_version(version_str="2.1.3"):
-    parts = [int(p) for p in version_str.split(".")]
-    return (parts[0] << 16) | (parts[1] << 8) | parts[2]
-# 2.1.3 -> 131331
-```
-
-#### X-WECHAT-UIN 生成
-该字段用于防止重放攻击，**每次请求都必须重新生成**。
-逻辑：随机 uint32 -> 转为十进制字符串 -> Base64 编码。
-```python
-import random
-import base64
-
-def get_random_uin():
-    uint32_val = random.randint(0, 0xFFFFFFFF)
-    return base64.b64encode(str(uint32_val).encode()).decode()
-```
-
 ---
 
 ## 3. 登录生命周期 (Login Flow)
@@ -70,12 +47,8 @@ def get_random_uin():
 - **核心状态处理**：
     1. `wait`: 等待扫码。
     2. `scaned`: 已扫码，等待手机端确认。
-    3. **`scaned_but_redirect` (重要)**：
-       此时返回体会包含 `redirect_host` (如 `sh.ilinkai.weixin.qq.com`)。
-       **必须** 立即将后续的所有轮询和业务请求重定向到这个新域名下。
-    4. `confirmed`: 确认登录。
-       返回 `bot_token` 和 `baseurl`。**请持久化存储 `bot_token`**。
-    5. `expired`: 二维码过期，需从 Step 1 重来。
+    3. **`scaned_but_redirect` (重要)**：此时返回体包含 `redirect_host`，必须将后续请求重定向到此域名。
+    4. `confirmed`: 确认登录，返回 `bot_token`。
 
 ---
 
@@ -83,14 +56,8 @@ def get_random_uin():
 
 ### 4.1 接收消息：长轮询 (getupdates)
 - **Endpoint**: `POST /ilink/bot/getupdates`
-- **Body**:
-```json
-{
-  "get_updates_buf": "", // 首次为空，后续使用返回的游标
-  "base_info": { "channel_version": "2.1.3" }
-}
-```
-- **关键点**：服务端会 Hold 住请求约 35 秒。若返回空列表但 `ret=0`，属于正常超时，应立即发起下一次请求。
+- **Body**: `{"get_updates_buf": "", "base_info": {"channel_version": "2.1.3"}}`
+- **关键点**：由 `get_updates_buf` 实现游标同步，空字符串表示首次同步。
 
 ---
 
@@ -99,102 +66,52 @@ def get_random_uin():
 对于图片、音视频和文件，微信要求将其加密上传到腾讯 CDN，然后在 `sendmessage` 中引用该 CDN 资源。
 
 ### 5.1 核心加密要求
-所有上传到 CDN 的二进制流必须使用 **AES-128-ECB** 模式加密。
-- **密钥 (AesKey)**：随机生成的 16 字节原始数据。
-- **填充 (Padding)**：标准 PKCS7 填充。
+所有上传到 CDN 的二进制流必须使用 **AES-128-ECB** 模式加密。密钥为随机生成的 16 字节原始数据。
 
 ### 5.2 CDN 上传全流程
+1. **预热**：调用 `POST /ilink/bot/getuploadurl`。
+2. **执行上传**：使用 `POST` 方法将加密后的二进制流发送到 `upload_full_url`。
+3. **获取凭证**：成功后的 CDN 响应头会包含 `x-encrypted-param`。
 
-1. **预热**：调用 `POST /ilink/bot/getuploadurl`。需提交：
-    - `rawsize`: 原文件大小（字节）。
-    - `rawfilemd5`: 原文件 MD5（十六进制字符串）。
-    - `filesize`: 加密后的密文大小（包含 Padding）。
-2. **执行上传**：
-    - 使用 `POST` 方法将加密后的二进制流发送到返回的 `upload_full_url`。
-    - **Header**: `Content-Type: application/octet-stream`。
-3. **获取凭证**：
-    - 成功后，CDN 响应头会包含 `x-encrypted-param`。
-    - 该字符串即为发送消息时所需的 `encrypt_query_param`。
-
-### 5.3 多媒体类型 (MessageItem) 结构
-
-在 `sendmessage` 的 `item_list` 中，不同媒体类型的结构如下：
-
-#### A. 图片 (IMAGE) - Type: 2
-```json
-{
-  "type": 2,
-  "image_item": {
-    "media": {
-      "encrypt_query_param": "<CDN返回的凭证>",
-      "aes_key": "<Base64编码后的16字节密钥>"
-    },
-    "thumb_media": { /* 同样流程上传缩略图，可选项 */ }
-  }
-}
-```
-
-#### B. 视频 (VIDEO) - Type: 5
-```json
-{
-  "type": 5,
-  "video_item": {
-    "media": { "encrypt_query_param": "...", "aes_key": "..." },
-    "video_size": 12345, // 密文大小
-    "play_length": 15000, // 时长（毫秒）
-    "video_md5": "<原文件MD5>",
-    "thumb_media": { /* 必须上传作为视频封面 */ }
-  }
-}
-```
-
-#### C. 文件 (FILE) - Type: 4
-```json
-{
-  "type": 4,
-  "file_item": {
-    "media": { "encrypt_query_param": "...", "aes_key": "..." },
-    "file_name": "data.pdf",
-    "md5": "<原文件MD5>",
-    "len": "12345" // 原文件大小字符串
-  }
-}
-```
-
-#### D. 语音 (VOICE) - Type: 3
-```json
-{
-  "type": 3,
-  "voice_item": {
-    "media": { "encrypt_query_param": "...", "aes_key": "..." },
-    "encode_type": 6,   // 编码类型: 6=SILK (建议格式), 5=AMR, 7=MP3
-    "sample_rate": 24000, // 采样率，常用 24000 或 16000
-    "playtime": 5000     // 时长（毫秒）
-  }
-}
-```
+### 5.3 多媒体类型 (MessageItem) 结构模版
+- **图片 (Type 2)**: 包含 `image_item` 字段，需提供原图与缩略图（可选）的 `media` 引用。
+- **视频 (Type 5)**: 包含 `video_item`，必填 `play_length` (毫秒) 和 `thumb_media` (封面)。
+- **语音 (Type 3)**: 包含 `voice_item`，强制使用 `encode_type: 6` (SILK)。
 
 ---
 
-## 6. Python 核心代码片段 (v2.1.3)
+## 6. 指令系统与逻辑路由 (Command System)
 
-### 6.1 AES 加密工具
+iLink 协议本身是纯净的消息通道，**不提供原生的 UI 菜单 (Menu)**。所有的指令（如 `/help`, `/start`）均需在您的智能体逻辑层（应用层）自行实现。
+
+### 6.1 指令识别原理 (Slash Commands)
+在解析 `getupdates` 返回的 `item_list` 时，通过字符串匹配检测文本：
+```python
+def is_command(text):
+    return text.strip().startswith('/')
+```
+
+### 6.2 路由分发建议
+1. **静态指令**：如 `/help` 返回预设的帮助文档。
+2. **状态指令**：如 `/time` 计算当前会话剩余存活时长。
+3. **拦截机制**：一旦匹配到指令，应用应直接返回回复，并结束当前消息的处理流程，**不要将其发给 AI 接口**。
+
+---
+
+## 7. Python 核心代码片段 (v2.1.3)
+
+### 7.1 AES 加密工具
 ```python
 import hashlib
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 
 def encrypt_binary(data, aes_key):
-    # aes_key 为 16 字节二进制原始密钥
     cipher = AES.new(aes_key, AES.MODE_ECB)
-    # PKCS7 填充后加密
     return cipher.encrypt(pad(data, AES.block_size))
-
-def get_md5(data):
-    return hashlib.md5(data).hexdigest()
 ```
 
-### 6.2 综合 Bot 类
+### 7.2 综合集成示例 (含指令路由)
 ```python
 import requests
 import random
@@ -207,7 +124,7 @@ class ILinkBot:
         self.base_url = base_url.rstrip('/')
         self.buf = ""
 
-    def _get_headers(self, body_payload=""):
+    def _get_headers(self):
         uin = base64.b64encode(str(random.randint(0, 0xFFFFFFFF)).encode()).decode()
         return {
             "Content-Type": "application/json",
@@ -218,47 +135,54 @@ class ILinkBot:
             "X-WECHAT-UIN": uin
         }
 
-    def poll_messages(self):
-        payload = {
-            "get_updates_buf": self.buf,
-            "base_info": {"channel_version": "2.1.3"}
-        }
-        res = requests.post(f"{self.base_url}/ilink/bot/getupdates", 
-                            json=payload, headers=self._get_headers(), timeout=40)
-        data = res.json()
-        self.buf = data.get("get_updates_buf", self.buf)
-        return data.get("msgs", [])
+    # 核心路由逻辑：在此定义指令
+    def handle_command(self, to_id, text, ctx_token):
+        cmd = text.strip().split(' ')[0].lower()
+        if cmd == "/help":
+            self.send_text(to_id, "🤖 指令列表：\n/help - 查看此帮助\n/time - 查看当前时间", ctx_token)
+            return True
+        elif cmd == "/time":
+            curr_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+            self.send_text(to_id, f"📅 当前时间：{curr_time}", ctx_token)
+            return True
+        return False
 
-    def send_raw_message(self, to_user_id, item_list, context_token):
+    def start_loop(self, on_message_cb):
+        while True:
+            try:
+                payload = {"get_updates_buf": self.buf, "base_info": {"channel_version": "2.1.3"}}
+                res = requests.post(f"{self.base_url}/ilink/bot/getupdates", 
+                                    json=payload, headers=self._get_headers(), timeout=40)
+                data = res.json()
+                self.buf = data.get("get_updates_buf", self.buf)
+                
+                for msg in data.get("msgs", []):
+                    if msg.get("message_type") != 1: continue
+                    text = msg["item_list"][0].get("text_item", {}).get("text", "")
+                    
+                    # 1. 优先尝试指令路由
+                    if text.startswith("/") and self.handle_command(msg["from_user_id"], text, msg["context_token"]):
+                        continue
+                        
+                    # 2. 如果不是指令，则回调业务逻辑 (AI 处理等)
+                    on_message_cb(msg)
+            except Exception as e:
+                print(f"Error: {e}")
+                time.sleep(1)
+
+    def send_text(self, to_user_id, text, context_token):
         payload = {
             "msg": {
-                "from_user_id": "",
-                "to_user_id": to_user_id,
+                "from_user_id": "", "to_user_id": to_user_id,
                 "client_id": f"bot-{int(time.time()*1000)}",
-                "message_type": 2,
-                "message_state": 2,
+                "message_type": 2, "message_state": 2,
                 "context_token": context_token,
-                "item_list": item_list
+                "item_list": [{"type": 1, "text_item": {"text": text}}]
             },
             "base_info": {"channel_version": "2.1.3"}
         }
-        res = requests.post(f"{self.base_url}/ilink/bot/sendmessage", 
-                             json=payload, headers=self._get_headers())
-        return res.json()
-
-    # 快捷发送文本
-    def send_text(self, to_user_id, text, context_token):
-        item_list = [{"type": 1, "text_item": {"text": text}}]
-        return self.send_raw_message(to_user_id, item_list, context_token)
+        return requests.post(f"{self.base_url}/ilink/bot/sendmessage", json=payload, headers=self._get_headers()).json()
 ```
 
 ---
-
-## 7. 常见限制与风险提示
-
-- **24 小时存活限制**：Token 有效期 24 小时，过期后必须由用户重新扫码。
-- **并发控制**：`getupdates` 必须是单实例运行，重复的长轮询会导致旧连接被踢下线。
-- **IDC 稳定性**：务必在您的后端实现 IDC Redirect 逻辑，否则跨机房连接可能导致消息延迟显著。
-
----
-*文档更新于：2026-04-02 (针对 V2.1.3 多媒体增强版)*
+*文档更新于：2026-04-02 (针对 V2.1.3 指令路由增强版)*

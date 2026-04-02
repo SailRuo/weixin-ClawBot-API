@@ -8,7 +8,7 @@
 
 2026 年腾讯通过 [OpenClaw](https://docs.openclaw.ai) 平台正式开放了微信个人账号的 Bot API，官方名称为 **微信 ClawBot 插件功能**，底层协议为 **iLink**，接入域名 `ilinkai.weixin.qq.com` 为腾讯官方服务器。
 
-本项目提供 Python 和 Node.js 两种实现，可直接接入兼容 Anthropic 格式的 AI 接口（Claude、GPT 等），实现收到微信消息后自动 AI 回复。**免 openclaw 部署和登录，直接接入与调用。**
+本项目提供 Python 和 Node.js 两种实现，支持接入 OpenAI 标准格式的任意 AI 模型（ChatGPT、DeepSeek、Claude、GPT 等），实现收到微信消息后自动 AI 回复。**免 openclaw 部署和登录，直接接入与调用。**
 
 ---
 
@@ -18,6 +18,7 @@
 - 长轮询实时接收消息
 - 调用 AI 接口生成回复
 - 发送前显示"正在输入"状态
+- **接入 OpenAI 标准接口**：支持 OpenAI、DeepSeek、Claude (OpenAI 格式代理) 等主流模型
 - 内置梯度重试（AI 接口失败自动重试）
 - **配置文件管理**：首次运行引导创建，支持交互式修改，API Key 脱敏显示
 - **24 小时自动重连**：到期前预警 → 用户确认 → 无缝切换新连接，全程不断线
@@ -31,7 +32,8 @@
 .
 ├── bot.py         # Python 实现（推荐）
 ├── bot.js         # Node.js 实现
-├── dusapi.py      # AI 接口封装（Python，兼容 Anthropic 格式）
+├── openai_api.py  # OpenAI 标准接口封装（推荐，支持 ChatGPT/DeepSeek 等）
+├── dusapi.py      # Anthropic 格式接口封装（兼容旧版）
 ├── config.json    # 配置文件（首次运行自动生成，勿提交到版本控制）
 └── README.md
 ```
@@ -91,9 +93,9 @@ node bot.js
 
 ```json
 {
-  "api_key": "your-api-key",
-  "base_url": "https://api.dusapi.com",
-  "model": "gpt-5",
+  "api_key": "sk-...",
+  "base_url": "https://api.openai.com",
+  "model": "gpt-4o",
   "prompt": "你是一个有帮助的AI助手，请用中文简洁地回复。字数尽量少一些"
 }
 ```
@@ -113,7 +115,7 @@ node bot.js
 使用此配置继续？(直接回车或输入 Y 继续 / 输入 N 重新配置):
 ```
 
-> **注意**：当前版本仅支持 [DusAPI](https://dusapi.com)。如需接入其他接口，请拉取源代码自行修改 `dusapi.py`。
+> **提示**：当前版本默认使用 `openai_api.py`，支持所有兼容 OpenAI 格式的接口（如 OpenAI 官方、DeepSeek、Dify 等）。如需切换回 Anthropic 格式，请在 `bot.py` 中修改 import 语句。
 
 ---
 
@@ -174,22 +176,34 @@ RECONNECT_CONFIG = {
 
 ---
 
-## AI 接口说明（dusapi.py）
+## AI 接口说明
 
-`DusAPI` 封装了兼容 Anthropic 格式的 HTTP 接口，支持所有使用 `x-api-key` + `/v1/messages` 格式的服务，包括：
+### OpenAI 标准接口 (openai_api.py - 推荐)
 
-- [DusAPI](https://dusapi.com)（兼容多模型）
-- Anthropic 官方 API
-- 其他 Anthropic 格式的第三方代理
+本项目默认支持 **OpenAI Chat Completions API** 格式，适配绝大多数 AI 平台：
 
-**DusConfig 参数：**
+- **OpenAI 官方** (`https://api.openai.com`)
+- **DeepSeek** (`https://api.deepseek.com`)
+- **Claude** (通过 OpenAI 格式代理或官方兼容接口)
+- **各种中转 API**
+
+**OpenAIConfig 参数：**
 
 | 参数 | 说明 | 默认值 |
 |---|---|---|
 | `api_key` | API 密钥 | 必填 |
-| `base_url` | 接口地址 | 必填 |
-| `model1` | 模型名称 | `claude-sonnet-4-5` |
+| `base_url` | 接口基础地址 | 必填 |
+| `model` | 模型名称 | `gpt-4o` |
 | `prompt` | 系统提示词 | `你是一个有帮助的AI助手。` |
+
+---
+
+### Anthropic 格式接口 (dusapi.py)
+
+兼容 `x-api-key` + `/v1/messages` 格式的服务，包括：
+
+- [DusAPI](https://dusapi.com)
+- Anthropic 官方 API
 
 ---
 
@@ -271,5 +285,6 @@ POST getupdates（长轮询，服务器 hold 35s）
 ## 相关资源
 
 - [OpenClaw 官方文档](https://docs.openclaw.ai)
-- [官方 npm 包](https://www.npmjs.com/package/@tencent-weixin/openclaw-weixin)
-- [DusAPI（兼容多模型的 AI 接口）](https://dusapi.com)
+- [OpenAI API 文档](https://platform.openai.com/docs/api-reference)
+- [DeepSeek 官方文档](https://api-docs.deepseek.com)
+- [DusAPI（推荐兼容多模型的 AI 接口）](https://dusapi.com)

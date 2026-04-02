@@ -16,7 +16,7 @@ venv/
 env/
 lib/
 lib64/
-
+data/
 # Node.js
 node_modules/
 npm-debug.log*
