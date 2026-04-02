@@ -329,24 +329,48 @@ def main():
         # 1. 发送语音
         if choice == "1":
             silk_path, is_temp = audio_to_silk(file_path)
-            param, thumb_param, key, encrypted_size = client.upload_media(silk_path, 4, user_id)
             with open(silk_path, "rb") as f:
                 raw_data = f.read()
+            
             # 估算时长：1KB 约 1.25s (1250ms)
             play_time = int(len(raw_data) / 1024 * 1250)
-            client.send_media_msg(user_id, ctx_token, 3, {
-                "voice_item": {
-                    "media": {
-                        "encrypt_query_param": param, 
-                        "aes_key": key,
-                        "encrypt_type": 1
-                    },
-                    "encode_type": 6,
-                    "bits_per_sample": 16,
-                    "playtime": play_time,
-                    "sample_rate": 24000
-                }
-            })
+            file_md5 = get_md5(raw_data)
+            
+            # 先尝试原生语音消息发送
+            print("[智能探测] 尝试原生语音消息发送...")
+            try:
+                param, thumb_param, key, encrypted_size = client.upload_media(silk_path, 4, user_id)
+                res = client.send_media_msg(user_id, ctx_token, 3, {
+                    "voice_item": {
+                        "media": {
+                            "encrypt_query_param": param, 
+                            "aes_key": key,
+                            "encrypt_type": 1
+                        },
+                        "encode_type": 6,
+                        "bits_per_sample": 16,
+                        "playtime": play_time,
+                        "sample_rate": 24000
+                    }
+                })
+                if res.get("ret", 0) != 0:
+                    raise Exception(f"语音消息发送失败: ret={res.get('ret')}")
+            except Exception as e:
+                print(f"    -> [失败降级] 原生语音发送失败({e})，正在转为\"文件模式\"重试...")
+                param, thumb_param, key, encrypted_size = client.upload_media(silk_path, 3, user_id)
+                client.send_media_msg(user_id, ctx_token, 4, {
+                    "file_item": {
+                        "media": {
+                            "encrypt_query_param": param, 
+                            "aes_key": key,
+                            "encrypt_type": 1
+                        },
+                        "file_name": os.path.basename(silk_path),
+                        "md5": file_md5,
+                        "len": str(len(raw_data))
+                    }
+                })
+            
             if is_temp and os.path.exists(silk_path):
                 os.remove(silk_path)
 
