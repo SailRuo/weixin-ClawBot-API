@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>iLink Bot Chat</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--primary:#07c160;--primary-dark:#06ad56;--bg:#ededed;--card:#fff;--text:#333;--text-secondary:#999;--border:#e8e8e8;--bubble-self:#95ec69;--bubble-other:#fff;--shadow:0 2px 12px rgba(0,0,0,.08)}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;background:var(--bg);height:100vh;display:flex;justify-content:center;align-items:center}
+#app{width:100%;max-width:480px;height:100vh;max-height:800px;background:var(--card);display:flex;flex-direction:column;box-shadow:var(--shadow);position:relative;overflow:hidden}
+@media(max-width:480px){#app{max-height:none;height:100vh;box-shadow:none}}
+
+/* Login View */
+#loginView{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;padding:40px 24px;text-align:center}
+#loginView.hidden{display:none}
+#loginView .logo{width:64px;height:64px;background:var(--primary);border-radius:16px;display:flex;align-items:center;justify-content:center;font-size:32px;margin-bottom:12px;color:#fff}
+#loginView h1{font-size:20px;font-weight:700;color:var(--text);margin-bottom:4px}
+#loginView .subtitle{font-size:13px;color:var(--text-secondary);margin-bottom:8px}
+
+.btn{padding:8px 20px;border:none;border-radius:20px;font-size:14px;cursor:pointer;transition:opacity .2s;white-space:nowrap}
+.btn:active{opacity:.7}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.btn-primary{background:var(--primary);color:#fff}
+.btn-outline{background:transparent;color:var(--primary);border:1px solid var(--primary)}
+.btn-danger{background:#fa5151;color:#fff}
+.btn-sm{padding:5px 14px;font-size:12px}
+.login-status{font-size:13px;color:var(--text-secondary);margin-bottom:8px}
+.login-status .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle}
+.dot.green{background:#07c160}
+.dot.yellow{background:#ffc300}
+.dot.gray{background:#ccc}
+.dot.red{background:#fa5151}
+/* Chat View */
+#chatView{display:none;flex-direction:column;height:100%}
+#chatView.active{display:flex}
+.chat-header{display:flex;align-items:center;padding:10px 16px;background:var(--card);border-bottom:1px solid var(--border);flex-shrink:0}
+.chat-header .info{flex:1;min-width:0}
+.chat-header .name{font-size:15px;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chat-header .meta{font-size:11px;color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chat-header .actions{display:flex;gap:4px;flex-shrink:0;margin-left:8px}
+.icon-btn{width:36px;height:36px;border:none;border-radius:50%;background:transparent;cursor:pointer;font-size:18px;display:flex;align-items:center;justify-content:center;transition:background .15s}
+.icon-btn:hover{background:#f0f0f0}
+.icon-btn:active{background:#e0e0e0}
+
+/* Messages */
+.msg-area{flex:1;overflow-y:auto;padding:12px 16px;background:var(--bg);display:flex;flex-direction:column;gap:8px}
+.msg-area .empty{text-align:center;color:#ccc;font-size:14px;margin-top:40px}
+.msg-row{display:flex;margin-bottom:2px;max-width:85%;animation:fadeIn .2s ease}
+.msg-row.received{align-self:flex-start}
+.msg-row.sent{align-self:flex-end;flex-direction:row-reverse}
+@keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+.msg-avatar{width:32px;height:32px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:14px;color:#fff;margin:0 8px}
+.msg-row.received .msg-avatar{background:#07c160}
+.msg-row.sent .msg-avatar{background:#7f7f7f}
+.msg-bubble{padding:8px 12px;border-radius:8px;font-size:14px;line-height:1.5;word-break:break-word;position:relative;max-width:100%}
+.msg-row.received .msg-bubble{background:var(--bubble-other);border-top-left-radius:2px;color:#333}
+.msg-row.sent .msg-bubble{background:var(--bubble-self);border-top-right-radius:2px;color:#333}
+.msg-row.sent .msg-bubble.sending{opacity:.7}
+.msg-row.sent .msg-bubble.failed{background:#ffd9d9}
+.msg-time{font-size:10px;color:var(--text-secondary);margin-top:2px;padding:0 4px}
+.msg-row.received .msg-time{text-align:left;padding-left:48px}
+.msg-row.sent .msg-time{text-align:right;padding-right:48px}
+.msg-text{white-space:pre-wrap}
+.msg-image{max-width:200px;max-height:240px;border-radius:6px;display:block;cursor:pointer}
+.msg-file{display:flex;align-items:center;gap:8px;padding:4px 0;color:var(--primary);text-decoration:none;font-size:13px}
+.msg-file:hover{text-decoration:underline}
+.msg-file .file-icon{font-size:20px}
+
+/* Input area */
+.input-area{flex-shrink:0;background:var(--card);border-top:1px solid var(--border);padding:8px 12px 12px;display:flex;align-items:flex-end;gap:6px}
+.input-area .attach-btn{width:36px;height:36px;border:none;border-radius:50%;background:transparent;cursor:pointer;font-size:20px;display:flex;align-items:center;justify-content:center;flex-shrink:0;color:#666;position:relative}
+.input-area .attach-btn input[type=file]{position:absolute;inset:0;opacity:0;cursor:pointer}
+.input-area .attach-btn:active{background:#f0f0f0}
+.input-area textarea{flex:1;border:none;outline:none;resize:none;padding:8px 12px;font-size:14px;font-family:inherit;border-radius:20px;background:#f5f5f5;min-height:36px;max-height:100px;line-height:1.4}
+.input-area .send-btn{width:36px;height:36px;border:none;border-radius:50%;background:var(--primary);color:#fff;cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.input-area .send-btn:disabled{background:#ccc;cursor:not-allowed}
+.input-area .send-btn:active{background:var(--primary-dark)}
+
+/* Image preview in input */
+.preview-bar{display:none;flex-shrink:0;padding:6px 12px;background:#fafafa;border-top:1px solid var(--border);align-items:center;gap:8px}
+.preview-bar.active{display:flex}
+.preview-bar img,.preview-bar .file-preview{height:40px;border-radius:6px;object-fit:cover}
+.preview-bar .file-preview{display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text);background:#f0f0f0;padding:0 10px;border-radius:6px}
+.preview-bar .file-preview .icon{font-size:16px}
+.preview-bar .cancel-preview{background:none;border:none;cursor:pointer;font-size:18px;color:#999;padding:4px}
+.preview-bar .cancel-preview:hover{color:#fa5151}
+
+/* Lightbox */
+.lightbox{display:none;position:fixed;inset:0;background:rgba(0,0,0,.9);z-index:1000;align-items:center;justify-content:center;cursor:pointer}
+.lightbox.active{display:flex}
+.lightbox img{max-width:90vw;max-height:90vh;border-radius:8px;object-fit:contain}
+
+/* Notification */
+.toast{position:fixed;top:20px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.75);color:#fff;padding:8px 20px;border-radius:20px;font-size:13px;z-index:2000;opacity:0;transition:opacity .3s;pointer-events:none}
+.toast.show{opacity:1}
+
+/* QR Modal */
+.qr-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:999;align-items:center;justify-content:center}
+.qr-modal.active{display:flex}
+.qr-modal-content{background:#fff;border-radius:16px;padding:32px 28px;text-align:center;max-width:360px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,.2);animation:modalIn .25s ease}
+@keyframes modalIn{from{transform:scale(.9);opacity:0}to{transform:scale(1);opacity:1}}
+.qr-modal-content h2{font-size:18px;margin-bottom:6px;color:#333}
+.qr-modal-content .desc{font-size:13px;color:#999;margin-bottom:20px}
+.qr-modal-content .qr-btn-wrap{margin-bottom:12px}
+.qr-modal-content .qr-btn-wrap .btn{font-size:16px;padding:14px 32px;display:inline-block;text-decoration:none}
+.qr-modal-content .status-line{font-size:13px;color:#666;margin-top:16px}
+.qr-modal-content .status-line .spinner{display:inline-block;width:14px;height:14px;border:2px solid #ddd;border-top-color:var(--primary);border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:6px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.qr-modal-content .close-btn{position:absolute;top:12px;right:12px;background:none;border:none;font-size:22px;color:#999;cursor:pointer;padding:4px}
+.qr-modal-content{position:relative}
+</style>
+</head>
+<body>
+
+<div id="app">
+  <!-- Login View -->
+  <div id="loginView">
+    <div class="logo">💬</div>
+    <h1>iLink Bot</h1>
+    <p class="subtitle">微信 iLink 协议聊天面板</p>
+    <div style="margin:24px 0">
+      <button class="btn btn-primary" onclick="getQRCode()" style="font-size:16px;padding:14px 36px">获取二维码</button>
+    </div>
+    <button class="btn btn-outline btn-sm" id="btnRestore" onclick="restoreLogin()" style="display:none">恢复登录</button>
+    <div class="login-status" id="loginStatus"><span class="dot gray"></span>未登录</div>
+  </div>
+
+  <!-- Chat View -->
+  <div id="chatView">
+    <div class="chat-header">
+      <div class="info">
+        <div class="name" id="chatTitle">iLink Bot</div>
+        <div class="meta" id="chatMeta">未连接</div>
+      </div>
+      <div class="actions">
+        <button class="icon-btn" onclick="showLoginPanel()" title="切换账号">&#9881;</button>
+        <button class="icon-btn" onclick="confirmLogout()" title="退出登录">&#10140;</button>
+      </div>
+    </div>
+    <div class="msg-area" id="msgArea">
+      <div class="empty" id="emptyHint">暂无消息<br><span style="font-size:12px;color:#bbb">有人给你发消息后会自动显示在这里</span></div>
+    </div>
+    <div class="preview-bar" id="previewBar">
+      <span id="previewContent"></span>
+      <button class="cancel-preview" onclick="clearPreview()">&times;</button>
+    </div>
+    <div class="input-area">
+      <div class="attach-btn" title="发送文件">&#128206;<input type="file" id="fileInput" onchange="handleFileSelect(event)"></div>
+      <div class="attach-btn" title="发送图片">&#128247;<input type="file" id="imageInput" accept="image/*" onchange="handleImageSelect(event)"></div>
+      <textarea id="msgInput" rows="1" placeholder="给别人发消息后可在此回复..." onkeydown="onInputKeydown(event)" oninput="autoResize(this)"></textarea>
+      <button class="send-btn" id="sendBtn" onclick="sendTextMsg()" disabled>&#10148;</button>
+    </div>
+  </div>
+</div>
+
+<div class="lightbox" id="lightbox" onclick="closeLightbox()"><img id="lightboxImg" src=""></div>
+<div class="toast" id="toast"></div>
+
+<!-- QR Modal -->
+<div class="qr-modal" id="qrModal">
+  <div class="qr-modal-content">
+    <button class="close-btn" onclick="closeQRModal()">&times;</button>
+    <h2>扫码登录</h2>
+    <p class="desc">请在手机微信中打开链接，扫描二维码</p>
+    <div class="qr-btn-wrap" id="qrBtnWrap"></div>
+    <div class="status-line" id="qrStatusLine"><span class="spinner"></span>等待扫码...</div>
+  </div>
+</div>
+
+<script>
+// ─── State ──────────────────────────────────────────
+let state = {
+  bot_token: localStorage.getItem('ilink_bot_token') || null,
+  ilink_bot_id: localStorage.getItem('ilink_bot_id') || null,
+  ilink_user_id: localStorage.getItem('ilink_user_id') || null,
+  base_url: localStorage.getItem('ilink_base_url') || 'https://ilinkai.weixin.qq.com',
+  login_status: 'idle',
+  qrcode: null,
+  qrcode_img_content: null,
+  get_updates_buf: '',
+  known_from_user: null,
+  known_context_token: null,
+  msgCount: 0,
+  pollTimer: null,
+  qrPollTimer: null,
+  previewFile: null,
+  previewType: null,
+  previewDataUrl: null,
+};
+
+function saveTokens() {
+  if (state.bot_token) {
+    localStorage.setItem('ilink_bot_token', state.bot_token);
+    localStorage.setItem('ilink_bot_id', state.ilink_bot_id || '');
+    localStorage.setItem('ilink_user_id', state.ilink_user_id || '');
+    localStorage.setItem('ilink_base_url', state.base_url);
+  }
+}
+
+function clearTokens() {
+  localStorage.removeItem('ilink_bot_token');
+  localStorage.removeItem('ilink_bot_id');
+  localStorage.removeItem('ilink_user_id');
+  localStorage.removeItem('ilink_base_url');
+}
+
+// ─── Toast ──────────────────────────────────────────
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(el._timer);
+  el._timer = setTimeout(() => el.classList.remove('show'), 2000);
+}
+
+// ─── QR Modal Login ─────────────────────────────────
+function getQRCode() {
+  const modal = document.getElementById('qrModal');
+  document.getElementById('qrBtnWrap').innerHTML = '';
+  document.getElementById('qrStatusLine').innerHTML = '<span class="spinner"></span>获取二维码中...';
+  modal.classList.add('active');
+
+  fetch('/api/get_qrcode', {method:'POST'})
+    .then(r=>r.json())
+    .then(d=>{
+      if (!d.success) {
+        document.getElementById('qrStatusLine').textContent = '❌ 获取失败: ' + d.error;
+        return;
+      }
+      state.qrcode = d.qrcode;
+      state.qrcode_img_content = d.qrcode_img_content;
+      document.getElementById('qrBtnWrap').innerHTML = `
+        <a href="${d.qrcode_img_content}" target="_blank" class="btn btn-primary" style="display:inline-block;text-decoration:none;font-size:16px;padding:14px 32px">在微信中打开</a>
+        <p style="font-size:11px;color:#999;margin-top:8px;word-break:break-all">${d.qrcode_img_content}</p>
+      `;
+      document.getElementById('qrStatusLine').innerHTML = '<span class="spinner"></span>等待扫码...';
+      if (state.qrPollTimer) clearInterval(state.qrPollTimer);
+      doQRPoll();
+      state.qrPollTimer = setInterval(doQRPoll, 2000);
+    })
+    .catch(e => {
+      document.getElementById('qrStatusLine').textContent = '❌ 请求失败: ' + e.message;
+    });
+}
+
+function closeQRModal() {
+  document.getElementById('qrModal').classList.remove('active');
+  if (state.qrPollTimer) {
+    clearInterval(state.qrPollTimer);
+    state.qrPollTimer = null;
+  }
+}
+
+function doQRPoll() {
+  fetch('/api/poll_status', {method:'POST'})
+    .then(r=>r.json())
+    .then(d=>{
+      if (!d.success) return;
+      const el = document.getElementById('qrStatusLine');
+      const s = d.status;
+      if (s === 'scaned') el.innerHTML = '<span class="spinner"></span>已扫码，请在手机上确认';
+      else if (s === 'confirmed') {
+        state.bot_token = d.bot_token;
+        state.ilink_bot_id = d.ilink_bot_id;
+        state.ilink_user_id = d.ilink_user_id;
+        if (d.base_url) state.base_url = d.base_url;
+        saveTokens();
+        closeQRModal();
+        toast('登录成功！');
+        switchToChat();
+      } else if (s === 'expired') {
+        closeQRModal();
+        toast('二维码已过期，请重新获取');
+        document.getElementById('loginStatus').innerHTML = '<span class="dot gray"></span>未登录';
+      } else if (s === 'wait') {
+        el.innerHTML = '<span class="spinner"></span>等待扫码...';
+      }
+    })
+    .catch(()=>{});
+}
+
+function restoreLogin() {
+  if (state.bot_token) {
+    fetch('/api/login_with_token', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        bot_token: state.bot_token,
+        ilink_bot_id: state.ilink_bot_id,
+        ilink_user_id: state.ilink_user_id,
+        base_url: state.base_url,
+      })
+    }).then(r=>r.json()).then(d=>{
+      if (d.success) { toast('已恢复登录'); switchToChat(); }
+      else toast('恢复登录失败');
+    }).catch(()=>toast('恢复登录失败'));
+  }
+}
+
+// ─── Chat View ──────────────────────────────────────
+function switchToChat() {
+  document.getElementById('loginView').classList.add('hidden');
+  document.getElementById('chatView').classList.add('active');
+  document.getElementById('chatTitle').textContent = '✅ ' + (state.ilink_bot_id || 'iLink Bot');
+  document.getElementById('chatMeta').textContent = '已连接 | ' + (state.ilink_user_id || '') + ' | ' + (state.base_url || '');
+  document.getElementById('sendBtn').disabled = false;
+  fetchMessages();
+  startPolling();
+  initTypingConfig();
+}
+
+function showLoginPanel() {
+  document.getElementById('chatView').classList.remove('active');
+  document.getElementById('loginView').classList.remove('hidden');
+  stopPolling();
+  if (state.bot_token) document.getElementById('btnRestore').style.display = 'inline-block';
+}
+
+function confirmLogout() {
+  if (!confirm('确定退出登录？')) return;
+  fetch('/api/logout', {method:'POST'});
+  clearTokens();
+  state.bot_token = null;
+  state.ilink_bot_id = null;
+  state.ilink_user_id = null;
+  document.getElementById('chatView').classList.remove('active');
+  document.getElementById('loginView').classList.remove('hidden');
+  document.getElementById('loginStatus').innerHTML = '<span class="dot gray"></span>已退出';
+  toast('已退出');
+}
+
+function initTypingConfig() {
+  if (state.known_from_user && state.known_context_token) {
+    fetch('/api/get_config', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        ilink_user_id: state.known_from_user,
+        context_token: state.known_context_token,
+      })
+    }).catch(()=>{});
+  }
+}
+
+// ─── Send Message ───────────────────────────────────
+function onInputKeydown(e) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendTextMsg();
+  }
+}
+
+function autoResize(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 100) + 'px';
+}
+
+async function sendTextMsg() {
+  const input = document.getElementById('msgInput');
+  const text = input.value.trim();
+  if (!text && !state.previewFile) return;
+  const to = state.known_from_user;
+  if (!to) { toast('还无人给你发消息，发送一条消息到你的 Bot 即可开始对话'); return; }
+  
+  const sendingType = state.previewType || 'text';
+  input.value = '';
+  autoResize(input);
+  addMsg({direction:'sent', type:sendingType, text, preview_url: state.previewDataUrl, timestamp:Date.now()/1000, _sending:true});
+  
+  try {
+    let itemList;
+    if (state.previewFile) {
+      itemList = [await uploadAndBuildItem(state.previewFile, to)];
+      clearPreview();
+    } else {
+      itemList = [{type:1, text_item:{text}}];
+    }
+    
+    const r = await fetch('/api/send_message', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        to_user_id: to,
+        context_token: state.known_context_token,
+        item_list: itemList,
+      })
+    });
+    const d = await r.json();
+    if (!d.success) { toast('发送失败: ' + (d.error || '')); }
+  } catch(e) {
+    toast('发送失败: ' + e.message);
+  }
+}
+
+async function handleFileSelect(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  state.previewFile = file;
+  state.previewType = 'file';
+  const el = document.getElementById('previewContent');
+  el.innerHTML = `<span class="file-preview"><span class="icon">&#128206;</span> ${file.name}</span>`;
+  document.getElementById('previewBar').classList.add('active');
+  e.target.value = '';
+}
+
+async function handleImageSelect(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  state.previewFile = file;
+  state.previewType = 'image';
+  const reader = new FileReader();
+  reader.onload = function(ev) {
+    state.previewDataUrl = ev.target.result;
+    const el = document.getElementById('previewContent');
+    el.innerHTML = `<img src="${ev.target.result}" alt="preview">`;
+    document.getElementById('previewBar').classList.add('active');
+  };
+  reader.readAsDataURL(file);
+  e.target.value = '';
+}
+
+function clearPreview() {
+  state.previewFile = null;
+  state.previewType = null;
+  state.previewDataUrl = null;
+  document.getElementById('previewBar').classList.remove('active');
+  document.getElementById('previewContent').innerHTML = '';
+}
+
+async function uploadAndBuildItem(file, toUserId) {
+  const isImage = file.type.startsWith('image/');
+  const mediaType = isImage ? 1 : 3;
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('media_type', String(mediaType));
+  formData.append('to_user_id', toUserId || '');
+  
+  const res = await fetch('/api/upload_media', {method:'POST', body:formData});
+  const d = await res.json();
+  if (!d.success) throw new Error(d.error);
+  return d.item;
+}
+
+// ─── Messages ────────────────────────────────────
+function addMsg(msg) {
+  const area = document.getElementById('msgArea');
+  const empty = area.querySelector('.empty');
+  if (empty) empty.remove();
+  
+  const text = msg.text || '';
+  const isSent = msg.direction === 'sent';
+  const ts = msg.timestamp ? new Date(msg.timestamp*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : '';
+  const msgId = 'm_' + Date.now() + '_' + Math.random().toString(36).slice(2,6);
+  
+  let contentHtml = '';
+  if (msg.type === 'image' || (msg.item_type === 2)) {
+    const url = msg.preview_url || msg.image_url || msg.thumb_url || '';
+    contentHtml = url
+      ? `<img class="msg-image" src="${url}" onclick="openLightbox('${url}')">`
+      : `<div style="font-size:32px;text-align:center;padding:4px 0">&#128247;</div>`;
+  } else if (msg.type === 'file' || msg.file_name) {
+    contentHtml = `<a class="msg-file" href="${msg.file_url||'#'}" target="_blank"><span class="file-icon">&#128206;</span>${msg.file_name||'文件'}</a>`;
+  } else {
+    contentHtml = `<div class="msg-text">${escapeHtml(text)}</div>`;
+  }
+  
+  const bubble = document.createElement('div');
+  bubble.className = `msg-row ${isSent ? 'sent' : 'received'}`;
+  bubble.id = msgId;
+  bubble.innerHTML = `
+    <div class="msg-avatar">${isSent ? 'B' : 'U'}</div>
+    <div>
+      <div class="msg-bubble ${msg._sending ? 'sending' : ''} ${msg._failed ? 'failed' : ''}">${contentHtml}</div>
+      <div class="msg-time">${ts}</div>
+    </div>
+  `;
+  area.appendChild(bubble);
+  area.scrollTop = area.scrollHeight;
+}
+
+function escapeHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function openLightbox(url) {
+  document.getElementById('lightboxImg').src = url;
+  document.getElementById('lightbox').classList.add('active');
+}
+
+function closeLightbox() {
+  document.getElementById('lightbox').classList.remove('active');
+}
+
+// ─── Poll incoming messages ─────────────────────
+function fetchMessages() {
+  fetch(`/api/messages?since=${state.msgCount}`)
+    .then(r=>r.json())
+    .then(d=>{
+      if (!d.success || !d.messages) return;
+      for (const entry of d.messages) {
+        const m = entry.message;
+        const text = extractText(m);
+        const itemType = m.item_list && m.item_list[0] ? m.item_list[0].type : 1;
+        const imgUrl = extractImageUrl(m);
+        const fileInfo = extractFileInfo(m);
+        const msgData = {
+          direction: 'received',
+          text: text,
+          item_type: itemType,
+          image_url: imgUrl,
+          file_name: fileInfo.name,
+          file_url: fileInfo.url,
+          timestamp: (m.create_time_ms || entry.timestamp || Date.now()) / 1000,
+        };
+        addMsg(msgData);
+        state.known_from_user = m.from_user_id;
+        state.known_context_token = m.context_token;
+        initTypingConfig();
+        state.msgCount++;
+      }
+    })
+    .catch(()=>{});
+}
+
+function extractText(msg) {
+  if (!msg.item_list) return '';
+  for (const item of msg.item_list) {
+    if (item.type === 1 && item.text_item) return item.text_item.text || '';
+    if (item.type === 3 && item.voice_item) return item.voice_item.text || '[语音]';
+  }
+  return '';
+}
+
+function extractImageUrl(msg) {
+  if (!msg.item_list) return '';
+  for (const item of msg.item_list) {
+    if (item.type === 2 && item.image_item) {
+      const m = item.image_item.media || item.image_item;
+      const aesKey = m.aes_key || item.image_item.aeskey || '';
+      
+      // If there is an AES key, we MUST decrypt it via our proxy!
+      if (aesKey) {
+        if (m.full_url || m.url) {
+          return `/api/media?url=${encodeURIComponent(m.full_url || m.url)}&key=${encodeURIComponent(aesKey)}`;
+        }
+        if (m.encrypt_query_param) {
+          return `/api/media?param=${encodeURIComponent(m.encrypt_query_param)}&key=${encodeURIComponent(aesKey)}`;
+        }
+      }
+      
+      // Fallback if no AES key
+      if (m.full_url || m.url) return m.full_url || m.url;
+    }
+  }
+  return '';
+}
+
+function extractFileInfo(msg) {
+  if (!msg.item_list) return {name:'', url:''};
+  for (const item of msg.item_list) {
+    if (item.type === 4 && item.file_item) {
+      const m = item.file_item.media || item.file_item;
+      const aesKey = m.aes_key || '';
+      const fileName = item.file_item.file_name || '文件';
+      let url = '';
+      if (aesKey) {
+        if (m.full_url || m.url) {
+          url = `/api/media?url=${encodeURIComponent(m.full_url || m.url)}&key=${encodeURIComponent(aesKey)}&name=${encodeURIComponent(fileName)}`;
+        } else if (m.encrypt_query_param) {
+          url = `/api/media?param=${encodeURIComponent(m.encrypt_query_param)}&key=${encodeURIComponent(aesKey)}&name=${encodeURIComponent(fileName)}`;
+        }
+      } else {
+        url = m.full_url || m.url || '';
+      }
+      return {name: fileName, url: url};
+    }
+    if (item.type === 5 && item.video_item) {
+      const m = item.video_item.media || item.video_item;
+      const aesKey = m.aes_key || '';
+      const fileName = '视频.mp4';
+      let url = '';
+      if (aesKey) {
+        if (m.full_url || m.url) {
+          url = `/api/media?url=${encodeURIComponent(m.full_url || m.url)}&key=${encodeURIComponent(aesKey)}&name=${encodeURIComponent(fileName)}`;
+        } else if (m.encrypt_query_param) {
+          url = `/api/media?param=${encodeURIComponent(m.encrypt_query_param)}&key=${encodeURIComponent(aesKey)}&name=${encodeURIComponent(fileName)}`;
+        }
+      } else {
+        url = m.full_url || m.url || '';
+      }
+      return {name: '视频', url: url};
+    }
+  }
+  return {name:'', url:''};
+}
+
+let pollTimer = null;
+
+function startPolling() {
+  if (pollTimer) return;
+  fetch('/api/start_polling', {method:'POST'}).catch(()=>{});
+  setTimeout(fetchMessages, 500);
+  pollTimer = setInterval(fetchMessages, 2000);
+}
+
+function stopPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+  fetch('/api/stop_polling', {method:'POST'}).catch(()=>{});
+}
+
+// ─── Init ───────────────────────────────────────
+window.onload = function() {
+  if (state.bot_token) {
+    restoreLogin();
+  }
+};
+</script>
+</body>
+</html>
