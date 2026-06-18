@@ -18,9 +18,11 @@ if errorlevel 1 (
 
 REM Release port 5000
 echo [INFO] Checking port 5000...
-for /f "tokens=5" %%i in ('netstat -ano ^| findstr :5000') do (
-    echo [INFO] Killing process %%i to release port 5000
-    taskkill /pid %%i /f >nul 2>&1
+for /f "tokens=5" %%i in ('netstat -ano ^| findstr LISTENING ^| findstr :5000') do (
+    if not "%%i"=="0" (
+        echo [INFO] Killing process %%i to release port 5000
+        taskkill /pid %%i /f >nul 2>&1
+    )
 )
 
 REM Install dependencies

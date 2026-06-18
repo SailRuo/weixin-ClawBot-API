@@ -64,7 +64,7 @@ def build_headers(include_auth=True):
 
 
 def build_base_info():
-    return {"channel_version": "2.4.3"}
+    return {"channel_version": "2.4.4"}
 
 
 def iLinkRequest(method, endpoint, payload=None, include_auth=True, timeout=15):
@@ -335,6 +335,29 @@ def get_media_proxy():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+def get_silk_duration(data: bytes) -> int:
+    if data.startswith(b"\x02#!SILK_V3"):
+        idx = 10
+    elif data.startswith(b"#!SILK_V3"):
+        idx = 9
+    else:
+        idx = data.find(b"#!SILK_V3")
+        if idx != -1:
+            idx += 9
+        else:
+            idx = 0
+    frames = 0
+    while idx < len(data):
+        if idx + 2 > len(data):
+            break
+        size = int.from_bytes(data[idx:idx+2], byteorder="little")
+        if size <= 0 or size > 1000 or idx + 2 + size > len(data):
+            break
+        idx += 2 + size
+        frames += 1
+    return frames * 20
+
+
 @app.route("/api/upload_media", methods=["POST"])
 def upload_media():
     try:
@@ -427,6 +450,9 @@ def upload_media():
                 "video_size": len(ciphertext),
             }
         elif media_type == 4:
+            playtime = get_silk_duration(raw_bytes)
+            if playtime == 0:
+                playtime = 3000  # fallback to 3s if parsing fails
             msg_item["voice_item"] = {
                 "media": {
                     "encrypt_query_param": download_param,
@@ -434,6 +460,9 @@ def upload_media():
                     "encrypt_type": 1,
                 },
                 "encode_type": 6,
+                "playtime": playtime,
+                "sample_rate": 24000,
+                "bits_per_sample": 16,
             }
         else:
             msg_item["file_item"] = {

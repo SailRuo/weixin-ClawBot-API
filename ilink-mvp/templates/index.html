@@ -162,7 +162,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica N
   <div class="qr-modal-content">
     <button class="close-btn" onclick="closeQRModal()">&times;</button>
     <h2>扫码登录</h2>
-    <p class="desc">请在手机微信中打开链接，扫描二维码</p>
+    <p class="desc">请使用手机微信扫描下方二维码登录</p>
     <div class="qr-btn-wrap" id="qrBtnWrap"></div>
     <div class="status-line" id="qrStatusLine"><span class="spinner"></span>等待扫码...</div>
   </div>
@@ -230,9 +230,13 @@ function getQRCode() {
       }
       state.qrcode = d.qrcode;
       state.qrcode_img_content = d.qrcode_img_content;
+      const qrImgUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(d.qrcode_img_content)}`;
       document.getElementById('qrBtnWrap').innerHTML = `
-        <a href="${d.qrcode_img_content}" target="_blank" class="btn btn-primary" style="display:inline-block;text-decoration:none;font-size:16px;padding:14px 32px">在微信中打开</a>
-        <p style="font-size:11px;color:#999;margin-top:8px;word-break:break-all">${d.qrcode_img_content}</p>
+        <div style="margin:16px 0;display:flex;justify-content:center">
+          <img src="${qrImgUrl}" alt="微信扫码" style="width:180px;height:180px;border:1px solid #eee;border-radius:8px;padding:6px;background:#fff" />
+        </div>
+        <a href="${d.qrcode_img_content}" target="_blank" class="btn btn-outline btn-sm" style="display:inline-block;text-decoration:none;font-size:13px;padding:6px 16px">在微信中打开</a>
+        <p style="font-size:10px;color:#bbb;margin-top:8px;word-break:break-all">${d.qrcode_img_content}</p>
       `;
       document.getElementById('qrStatusLine').innerHTML = '<span class="spinner"></span>等待扫码...';
       if (state.qrPollTimer) clearInterval(state.qrPollTimer);
@@ -430,7 +434,8 @@ function clearPreview() {
 
 async function uploadAndBuildItem(file, toUserId) {
   const isImage = file.type.startsWith('image/');
-  const mediaType = isImage ? 1 : 3;
+  const isSilk = file.name.toLowerCase().endsWith('.silk');
+  const mediaType = isImage ? 1 : (isSilk ? 4 : 3);
   const formData = new FormData();
   formData.append('file', file);
   formData.append('media_type', String(mediaType));
